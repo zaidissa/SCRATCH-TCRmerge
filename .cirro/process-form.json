@@ -1,0 +1,57 @@
+{
+    "form": {
+        "title": "SCRATCH-TCRmerge: join TCR tables onto a GEX object",
+        "description": "Adds per-cell TCR data (TCRtoolkit's bridge/merged_vdj_object/post_qc_cells.tsv) to an annotated GEX AnnData as .obs columns, matched by cell barcode. The expression matrix is never loaded, so runtime does not scale with cell count. Select both the TCRtoolkit output dataset and the GEX dataset under 'Datasets to use'. Outputs merged.h5ad plus the joined tables as .tsv and .rds.",
+        "properties": {
+            "tcr_table_pattern": {
+                "type": "string",
+                "title": "TCR table filename",
+                "description": "Which per-cell TCR table to take from the TCRtoolkit dataset. Falls back to any *_cells.tsv (preferring post_qc) if this name is not found.",
+                "default": "post_qc_cells.tsv"
+            },
+            "sample_col": {
+                "type": "string",
+                "title": "Sample column",
+                "description": "Column in the TCR table holding the sample name. Used to build sample-prefixed barcode candidates.",
+                "default": "sample"
+            },
+            "barcode_col": {
+                "type": "string",
+                "title": "Barcode column",
+                "description": "Column in the TCR table holding the cell barcode.",
+                "default": "barcode"
+            },
+            "cell_id_col": {
+                "type": "string",
+                "title": "Cell ID column",
+                "description": "Column holding a composite cell id (e.g. <sample>_<barcode>). Synthesised from sample + barcode if absent.",
+                "default": "cell_id"
+            },
+            "obs_prefix": {
+                "type": "string",
+                "title": "Prefix for added columns",
+                "description": "Prepended to every TCR column added to .obs, so nothing in the GEX object is overwritten.",
+                "default": "tcr_"
+            },
+            "min_match_rate": {
+                "type": "number",
+                "title": "Minimum barcode match rate",
+                "description": "Abort if the best barcode convention matches fewer than this fraction of TCR rows. Guards against a silently wrong join.",
+                "default": 0.01
+            },
+            "subset_to_tcr": {
+                "type": "boolean",
+                "title": "Also write a TCR-only object",
+                "description": "Additionally write merged.tcr_only.h5ad containing just the cells that carry TCR data. This one does read the matrix for the kept cells.",
+                "default": false
+            },
+            "emit_rds": {
+                "type": "boolean",
+                "title": "Also write .rds tables",
+                "description": "Write .rds copies of the output tables so they can be opened directly in R.",
+                "default": true
+            }
+        }
+    },
+    "ui": {}
+}

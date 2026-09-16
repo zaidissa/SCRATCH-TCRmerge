@@ -1,0 +1,17 @@
+# Nextflow
+work/
+.nextflow/
+.nextflow.log*
+results/
+trace.txt*
+timeline.html*
+report.html*
+dag.dot*
+
+# test scratch
+test_out/
+test_data/*.h5ad
+
+# OS / editors
+.DS_Store
+*.swp
