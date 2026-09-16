@@ -24,8 +24,14 @@ of cell count. The GEX side stays in Python; TCRtoolkit keeps taking `.rds` exac
 
 | Input | What it is |
 |---|---|
-| GEX `.h5ad` | Your annotated object (cell-type labels, embeddings, counts) |
+| GEX `.h5ad` | SCRATCH-QC's per-run object, e.g. `GBM_DFCI1_CSF_singlet.h5ad` — selected by the `gex_h5ad_pattern` glob (default `*_singlet.h5ad`) since the name changes every run |
 | TCR table(s) | TCRtoolkit's `bridge/merged_vdj_object/post_qc_cells.tsv` (one row per cell) |
+
+**Which GEX object?** SCRATCH-QC's `*_singlet.h5ad` carries QC metadata and embeddings but **not**
+cell-type labels — those come from SCRATCH-Annotation (celltypist writes
+`*_celltypist_annotation_object.h5ad` with `celltypist_cell_label_coarse`). If you need subset
+classification (CD8 effector, CD4 Treg…) alongside the TCR data, point `gex_h5ad_pattern` at the
+annotation object instead.
 
 ## Outputs
 
@@ -94,6 +100,8 @@ the minimum match rate, whether to write a TCR-only object, and whether to write
 
 | Param | Default | Purpose |
 |---|---|---|
+| `gex_h5ad_pattern` | `*_singlet.h5ad` | Glob picking the GEX object (Cirro only; locally use `--gex_h5ad`) |
+| `tcr_table_pattern` | `post_qc_cells.tsv` | Which TCR table to take (Cirro only; locally use `--tcr_tables`) |
 | `--sample_col` | `sample` | Sample column in the TCR table |
 | `--barcode_col` | `barcode` | Barcode column in the TCR table |
 | `--cell_id_col` | `cell_id` | Composite id; synthesised if absent |

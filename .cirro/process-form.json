@@ -3,6 +3,12 @@
         "title": "SCRATCH-TCRmerge: join TCR tables onto a GEX object",
         "description": "Adds per-cell TCR data (TCRtoolkit's bridge/merged_vdj_object/post_qc_cells.tsv) to an annotated GEX AnnData as .obs columns, matched by cell barcode. The expression matrix is never loaded, so runtime does not scale with cell count. Select both the TCRtoolkit output dataset and the GEX dataset under 'Datasets to use'. Outputs merged.h5ad plus the joined tables as .tsv and .rds.",
         "properties": {
+            "gex_h5ad_pattern": {
+                "type": "string",
+                "title": "GEX object filename",
+                "description": "Glob pattern selecting the GEX .h5ad from the chosen datasets. SCRATCH-QC names its object per run (e.g. GBM_DFCI1_CSF_singlet.h5ad), so the default matches any *_singlet.h5ad. Note cell-type labels come from SCRATCH-Annotation, not SCRATCH-QC.",
+                "default": "*_singlet.h5ad"
+            },
             "tcr_table_pattern": {
                 "type": "string",
                 "title": "TCR table filename",

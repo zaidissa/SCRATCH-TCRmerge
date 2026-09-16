@@ -14,24 +14,39 @@ strings) so they already exist in ds.params before this runs, and add_param
 asserts "already exists" without it.
 """
 
+from fnmatch import fnmatch
+
 from cirro.helpers.preprocess_dataset import PreprocessDataset
 
 
-def pick_h5ad(ds, files):
-    hits = [f for f in files if f.lower().endswith(".h5ad")]
-    # Ignore anything this tool itself produced, so re-running on an output
-    # dataset doesn't pick up the previous merge.
-    hits = [f for f in hits if not f.rsplit("/", 1)[-1].startswith("merged")] or hits
+def pick_h5ad(ds, files, pattern):
+    """
+    SCRATCH-QC names its object per run (e.g. GBM_DFCI1_CSF_singlet.h5ad), so match on a
+    glob pattern rather than a fixed name. Anything this tool produced itself is skipped,
+    so re-running on an output dataset does not pick up the previous merge.
+    """
+    h5ads = [f for f in files if f.lower().endswith(".h5ad")]
+    h5ads = [f for f in h5ads if not f.rsplit("/", 1)[-1].startswith("merged")] or h5ads
 
-    if not hits:
+    if not h5ads:
         raise ValueError(
-            "No .h5ad found in the selected datasets. Select the dataset holding "
-            "the annotated GEX object."
+            "No .h5ad found in the selected datasets. Select the dataset holding the GEX "
+            "object (e.g. SCRATCH-QC's *_singlet.h5ad)."
         )
+
+    hits = [f for f in h5ads if fnmatch(f.rsplit("/", 1)[-1], pattern)]
+    if not hits:
+        ds.logger.warning(
+            f"No .h5ad matched '{pattern}'; falling back to any .h5ad in the dataset. "
+            f"Candidates: {[f.rsplit('/', 1)[-1] for f in h5ads]}"
+        )
+        hits = h5ads
+
     if len(hits) > 1:
         ds.logger.warning(
-            f"{len(hits)} .h5ad files found; using the first: {hits[0]}. "
-            "Select a single GEX dataset to remove the ambiguity."
+            f"{len(hits)} .h5ad files matched '{pattern}'; using the first: {hits[0]}. "
+            f"Narrow 'GEX object filename' to disambiguate. "
+            f"Matches: {[f.rsplit('/', 1)[-1] for f in hits]}"
         )
     return hits[0]
 
@@ -64,12 +79,15 @@ def main():
     files = list(ds.files["file"]) if len(ds.files) else []
     ds.logger.info(f"{len(files)} files visible across the selected datasets")
 
+    # ds.params may be a plain dict or a params object depending on cirro version.
     try:
-        pattern = dict(ds.params).get("tcr_table_pattern") or "post_qc_cells.tsv"
+        params = dict(ds.params)
     except Exception:
-        pattern = "post_qc_cells.tsv"
+        params = {}
+    pattern = params.get("tcr_table_pattern") or "post_qc_cells.tsv"
+    gex_pattern = params.get("gex_h5ad_pattern") or "*_singlet.h5ad"
 
-    gex = pick_h5ad(ds, files)
+    gex = pick_h5ad(ds, files, gex_pattern)
     ds.logger.info(f"GEX object: {gex}")
     ds.add_param("gex_h5ad", gex, overwrite=True)
 
