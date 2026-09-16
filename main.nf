@@ -14,8 +14,20 @@ nextflow.enable.dsl = 2
  * group is rewritten, so runtime and memory do not scale with cell count.
  */
 
-include { MERGE_TCR_GEX } from './modules/local/merge_tcr_gex.nf'
-include { TABLES_TO_RDS } from './modules/local/tables_to_rds.nf'
+include { MERGE_TCR_GEX }      from './modules/local/merge_tcr_gex.nf'
+include { TABLES_TO_RDS }      from './modules/local/tables_to_rds.nf'
+include { PUBLISH_TCR_SOURCE } from './modules/local/publish_tcr_source.nf'
+
+// Comma-separated list (what Cirro's preprocess.py writes) or a single path/glob.
+// split(',', -1) keeps trailing empty entries out of the file list.
+//
+// Declared as a function, not `def x = { ... }`: Nextflow 26.04 rejects a top-level
+// closure assignment as a statement mixed with script declarations.
+def as_file_list(value) {
+    value.toString().contains(',')
+        ? value.toString().split(',', -1).findAll { it?.trim() }
+        : [ value.toString() ]
+}
 
 workflow {
 
@@ -28,14 +40,8 @@ workflow {
 
     ch_gex = Channel.fromPath(params.gex_h5ad, checkIfExists: true)
 
-    // Accept either a comma-separated list (what the Cirro preprocess writes)
-    // or a glob. split(',', -1) keeps trailing empties out of the file list.
-    def tcr_entries = params.tcr_tables.toString().contains(',')
-        ? params.tcr_tables.toString().split(',', -1).findAll { it?.trim() }
-        : [ params.tcr_tables.toString() ]
-
     ch_tcr = Channel
-        .fromList(tcr_entries)
+        .fromList( as_file_list(params.tcr_tables) )
         .flatMap { entry -> file(entry.trim(), checkIfExists: true) }
         .collect()
 
@@ -43,6 +49,17 @@ workflow {
 
     if (params.emit_rds == true) {
         TABLES_TO_RDS( MERGE_TCR_GEX.out.tables )
+    }
+
+    // Carry the rest of the TCR bundle (per-sample summaries, the Seurat/combineTCR
+    // .rds objects, pre_qc_cells.tsv) into the merged dataset without joining it.
+    if (params.tcr_passthrough) {
+        ch_passthrough = Channel
+            .fromList( as_file_list(params.tcr_passthrough) )
+            .flatMap { entry -> file(entry.trim(), checkIfExists: true) }
+            .collect()
+
+        PUBLISH_TCR_SOURCE( ch_passthrough )
     }
 
     // Nextflow 26.04's parser rejects a top-level `workflow.onComplete` block

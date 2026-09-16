@@ -51,6 +51,29 @@ def pick_h5ad(ds, files, pattern):
     return hits[0]
 
 
+def pick_passthrough(ds, files, patterns, already_used):
+    """
+    Everything else in TCRtoolkit's merged_vdj_object bundle: per-sample summaries and
+    the Seurat / combineTCR .rds objects, plus pre_qc_cells.tsv. None of it can be joined
+    onto .obs - the summaries are per-sample, the .rds files are R objects, and
+    pre_qc_cells.tsv repeats the same barcodes - so it is republished verbatim instead.
+    """
+    globs = [p.strip() for p in patterns.split(",") if p.strip()]
+    used = set(already_used)
+    hits = [
+        f for f in files
+        if f not in used and any(fnmatch(f.rsplit("/", 1)[-1], g) for g in globs)
+    ]
+    # Only carry files that sit beside a table we are actually joining, so selecting a
+    # big upstream dataset does not drag unrelated .rds files into the output.
+    if used:
+        parents = {u.rsplit("/", 1)[0] for u in used}
+        beside = [f for f in hits if f.rsplit("/", 1)[0] in parents]
+        if beside:
+            hits = beside
+    return sorted(hits)
+
+
 def pick_tcr_tables(ds, files, pattern):
     exact = [f for f in files if f.rsplit("/", 1)[-1] == pattern]
     if exact:
@@ -93,12 +116,21 @@ def main():
 
     tcr = pick_tcr_tables(ds, files, pattern)
     for t in tcr:
-        ds.logger.info(f"TCR table: {t}")
+        ds.logger.info(f"TCR table (joined): {t}")
     ds.add_param("tcr_tables", ",".join(tcr), overwrite=True)
 
+    passthrough_patterns = params.get("tcr_passthrough_patterns") or (
+        "*_summary.tsv,*_seurat.rds,*_combineTCR.rds,pre_qc_cells.tsv"
+    )
+    extra = pick_passthrough(ds, files, passthrough_patterns, tcr)
+    for e in extra:
+        ds.logger.info(f"TCR file (carried over, not joined): {e}")
+    ds.add_param("tcr_passthrough", ",".join(extra), overwrite=True)
+
     ds.logger.info(
-        f"Merging {len(tcr)} TCR table(s) onto 1 GEX object. The expression matrix "
-        "is not read; only .obs is rewritten."
+        f"Merging {len(tcr)} TCR table(s) onto 1 GEX object, carrying {len(extra)} "
+        "further TCR file(s) into tcr_source/. The expression matrix is not read; "
+        "only .obs is rewritten."
     )
     ds.logger.info(ds.params)
 

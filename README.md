@@ -44,7 +44,22 @@ annotation object instead.
 | `tables/tcr_rows_without_gex_cell.tsv` | TCR cells with no matching GEX cell |
 | `tables/merge_summary.tsv` | One-line summary of the join |
 | `tables_rds/*.rds` | The same tables as R data.frames (`emit_rds`, default on) |
+| `tcr_source/*` | The rest of the TCRtoolkit bundle, copied verbatim (see below) |
 | `merged.tcr_only.h5ad` | Optional: only cells carrying TCR data (`subset_to_tcr`) |
+
+### What gets joined, and what is only carried over
+
+TCRtoolkit's `bridge/merged_vdj_object/` holds eight files. Only one is joinable:
+
+| File | Treatment |
+|---|---|
+| `post_qc_cells.tsv` | **Joined** onto `.obs` — one row per cell |
+| `pre_qc_cells.tsv` | Carried over. Same barcodes as post-QC, so joining both would duplicate every cell |
+| `pre/post_qc_summary.tsv` | Carried over. Per-**sample** (one row per sample), not per-cell |
+| `pre/post_qc_seurat.rds`, `pre/post_qc_combineTCR.rds` | Carried over. R objects the Python merger cannot read |
+
+Carried-over files land in `tcr_source/` so the merged dataset holds the whole TCR bundle
+alongside the merged object. Set "Other TCR files to carry over" to empty to skip them.
 
 The `.rds` files are **data.frames, not Seurat objects** — deliberately. Rebuilding a Seurat
 object here would reintroduce the matrix-size ceiling this tool exists to avoid.

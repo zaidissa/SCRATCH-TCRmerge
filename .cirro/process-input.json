@@ -1,6 +1,8 @@
 {
     "gex_h5ad": "",
     "tcr_tables": "",
+    "tcr_passthrough": "",
+    "tcr_passthrough_patterns": "$.params.dataset.paramJson.tcr_passthrough_patterns",
     "gex_h5ad_pattern": "$.params.dataset.paramJson.gex_h5ad_pattern",
     "tcr_table_pattern": "$.params.dataset.paramJson.tcr_table_pattern",
     "sample_col": "$.params.dataset.paramJson.sample_col",

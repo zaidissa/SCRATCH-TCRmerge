@@ -15,6 +15,12 @@
                 "description": "Which per-cell TCR table to take from the TCRtoolkit dataset. Falls back to any *_cells.tsv (preferring post_qc) if this name is not found.",
                 "default": "post_qc_cells.tsv"
             },
+            "tcr_passthrough_patterns": {
+                "type": "string",
+                "title": "Other TCR files to carry over",
+                "description": "Comma-separated filename patterns from the same TCRtoolkit folder to copy into the merged dataset under tcr_source/ without joining them. The per-sample summaries are not per-cell, the .rds files are R objects, and pre_qc_cells.tsv repeats the same barcodes, so none can be joined onto .obs. Leave empty to carry nothing over.",
+                "default": "*_summary.tsv,*_seurat.rds,*_combineTCR.rds,pre_qc_cells.tsv"
+            },
             "sample_col": {
                 "type": "string",
                 "title": "Sample column",
