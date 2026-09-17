@@ -106,7 +106,21 @@ python bin/merge_tcr_gex.py \
 
 Register this repo as a Cirro process pointing at `.cirro/`, then select **both** datasets under
 "Datasets to use": the TCRtoolkit output dataset (for `post_qc_cells.tsv`) and the GEX dataset
-(for the `.h5ad`). `.cirro/preprocess.py` finds one `.h5ad` and the TCR table(s) and wires them in.
+(for the `.h5ad`).
+
+Two ways to name the inputs, in priority order:
+
+1. **Pick them explicitly** — "GEX object (.h5ad)" and "TCR per-cell table (.tsv)" are file
+   pickers that browse the selected datasets. Recommended: you see exactly which file is used.
+2. **Leave the pickers empty** and `.cirro/preprocess.py` discovers them by filename pattern
+   (`*_singlet.h5ad` and `post_qc_cells.tsv` by default), logging what it chose.
+
+Either way, keep the TCR dataset selected: the carried-over files in `tcr_source/` are found by
+scanning the selected datasets, not through a picker.
+
+The process must have **`uses_sample_sheet` disabled** in its Cirro definition. This pipeline
+consumes files, not samples, and SCRATCH-QC output datasets carry no sample metadata — leaving it
+enabled makes Cirro demand a sample selection that cannot be satisfied.
 
 Form options: TCR table filename, the sample/barcode/cell-id column names, the `.obs` prefix,
 the minimum match rate, whether to write a TCR-only object, and whether to write `.rds` tables.

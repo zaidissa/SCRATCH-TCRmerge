@@ -110,13 +110,25 @@ def main():
     pattern = params.get("tcr_table_pattern") or "post_qc_cells.tsv"
     gex_pattern = params.get("gex_h5ad_pattern") or "*_singlet.h5ad"
 
-    gex = pick_h5ad(ds, files, gex_pattern)
-    ds.logger.info(f"GEX object: {gex}")
+    # A file picked explicitly in the form wins; the pattern scan is the fallback, so
+    # selecting datasets and letting this discover the files still works unchanged.
+    gex_picked = str(params.get("gex_h5ad_selected") or "").strip()
+    if gex_picked:
+        gex = gex_picked
+        ds.logger.info(f"GEX object (picked in the form): {gex}")
+    else:
+        gex = pick_h5ad(ds, files, gex_pattern)
+        ds.logger.info(f"GEX object (auto-discovered via '{gex_pattern}'): {gex}")
     ds.add_param("gex_h5ad", gex, overwrite=True)
 
-    tcr = pick_tcr_tables(ds, files, pattern)
-    for t in tcr:
-        ds.logger.info(f"TCR table (joined): {t}")
+    tcr_picked = str(params.get("tcr_table_selected") or "").strip()
+    if tcr_picked:
+        tcr = [tcr_picked]
+        ds.logger.info(f"TCR table (picked in the form, joined): {tcr_picked}")
+    else:
+        tcr = pick_tcr_tables(ds, files, pattern)
+        for t in tcr:
+            ds.logger.info(f"TCR table (auto-discovered, joined): {t}")
     ds.add_param("tcr_tables", ",".join(tcr), overwrite=True)
 
     passthrough_patterns = params.get("tcr_passthrough_patterns") or (
