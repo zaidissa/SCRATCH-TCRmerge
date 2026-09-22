@@ -10,6 +10,7 @@
     "sample_col": "$.params.dataset.paramJson.sample_col",
     "barcode_col": "$.params.dataset.paramJson.barcode_col",
     "cell_id_col": "$.params.dataset.paramJson.cell_id_col",
+    "library_tokens": "$.params.dataset.paramJson.library_tokens",
     "obs_prefix": "$.params.dataset.paramJson.obs_prefix",
     "min_match_rate": "$.params.dataset.paramJson.min_match_rate",
     "subset_to_tcr": "$.params.dataset.paramJson.subset_to_tcr",

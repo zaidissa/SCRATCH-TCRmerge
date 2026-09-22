@@ -32,6 +32,7 @@ process MERGE_TCR_GEX {
         --barcode-col '${params.barcode_col}' \\
         --cell-id-col '${params.cell_id_col}' \\
         --prefix '${params.obs_prefix}' \\
+        --library-tokens '${params.library_tokens}' \\
         --min-match-rate ${params.min_match_rate} \\
         ${subset_arg} > merge_log.txt 2>&1 || { cat merge_log.txt; exit 1; }
     cat merge_log.txt

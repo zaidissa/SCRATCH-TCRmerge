@@ -17,12 +17,26 @@ Barcode reconciliation
 VDJ and GEX barcode spellings routinely disagree ("AGAGAATGTACTACAA" vs
 "AGAGAATGTACTACAA-1" vs "<sample>_AGAGAATGTACTACAA"). Rather than trusting one
 convention, every candidate key is scored against the GEX obs_names and the best
-match rate wins -- the same strategy TCRtoolkit uses internally. All candidates
-and their rates are written to the join report so a bad join is visible, not silent.
+match rate wins. All candidates and their rates are written to the join report so
+a bad join is visible, not silent.
+
+Library-type sample names
+-------------------------
+Paired 5' GEX and VDJ libraries from the same GEM well share cell barcodes but are
+usually named after their library type: BTC-GBM-001-001-GEX vs BTC-GBM-001-001-TCR,
+or ...-S3-GEX-LIB vs ...-S3-TCR-LIB. Exact sample-prefixed keys can never match
+those. So the library words (--library-tokens, default GEX,TCR,VDJ,BCR,ADT) are
+dropped as whole tokens from the sample part of BOTH sides, and the result is tried
+as extra candidates. Matches are mapped back to the ORIGINAL GEX cell names, exact
+candidates win ties, and normalised keys that would collide are excluded rather
+than guessed. Barcodes are never joined without their sample: 10x barcodes collide
+across libraries by chance, so a bare-barcode join would attach one sample's TCR to
+another sample's cell.
 """
 
 import argparse
 import os
+import re
 import shutil
 import sys
 
@@ -36,46 +50,69 @@ except ImportError:                      # older anndata
     from anndata.experimental import read_elem, write_elem
 
 
+# ── sample-name normalisation ─────────────────────────────────────────────────
+
+def make_normaliser(tokens_csv):
+    """Return a function dropping library-type words from a sample name, or None."""
+    tokens = {t.strip().upper() for t in (tokens_csv or "").split(",") if t.strip()}
+    if not tokens:
+        return None
+
+    def normalise(sample):
+        parts = re.split(r"[-_]", str(sample))
+        kept = [p for p in parts if p.upper() not in tokens]
+        # A name made only of library words would normalise to nothing - keep it as is.
+        return "-".join(kept) if kept else str(sample)
+
+    return normalise
+
+
+def build_normalised_index(obs_names, normalise):
+    """
+    Map a normalised GEX key -> original obs_name. obs_names are split at the LAST
+    underscore into <sample>_<barcode...>; only the sample part is normalised. Keys
+    two different cells would share are dropped, never resolved by guessing.
+    """
+    index, clashes = {}, set()
+    for name in map(str, obs_names):
+        if "_" not in name:
+            continue
+        sample, tail = name.rsplit("_", 1)
+        key = f"{normalise(sample)}_{tail}"
+        if key in index and index[key] != name:
+            clashes.add(key)
+        else:
+            index[key] = name
+    for key in clashes:
+        index.pop(key, None)
+    return index, len(clashes)
+
+
 # ── barcode key candidates ────────────────────────────────────────────────────
-# Each returns a pd.Series of candidate join keys built from the TCR table.
+# (name, builder, target). builder(df, barcode_col, sample_col) -> pd.Series of keys.
+# target "exact" keys are matched against obs_names as written; "normalised" keys
+# against the library-normalised GEX index.
 
-def _bare(df, bc, sm):
-    return df[bc].astype(str)
-
-
-def _bare_minus1(df, bc, sm):
-    return df[bc].astype(str) + "-1"
-
-
-def _sample_bare(df, bc, sm):
-    return df[sm].astype(str) + "_" + df[bc].astype(str)
-
-
-def _sample_minus1(df, bc, sm):
-    return df[sm].astype(str) + "_" + df[bc].astype(str) + "-1"
-
-
-def _sample_dash(df, bc, sm):
-    return df[sm].astype(str) + "-" + df[bc].astype(str)
-
-
-def _cellid(df, bc, sm):
-    return df["__cell_id__"].astype(str)
-
-
-def _cellid_minus1(df, bc, sm):
-    return df["__cell_id__"].astype(str) + "-1"
-
-
-CANDIDATES = [
-    ("barcode", _bare),
-    ("barcode-1", _bare_minus1),
-    ("sample_barcode", _sample_bare),
-    ("sample_barcode-1", _sample_minus1),
-    ("sample-barcode", _sample_dash),
-    ("cell_id", _cellid),
-    ("cell_id-1", _cellid_minus1),
-]
+def build_candidates(normalise):
+    cands = [
+        ("barcode",          lambda d, bc, sm: d[bc].astype(str), "exact"),
+        ("barcode-1",        lambda d, bc, sm: d[bc].astype(str) + "-1", "exact"),
+        ("sample_barcode",   lambda d, bc, sm: d[sm].astype(str) + "_" + d[bc].astype(str), "exact"),
+        ("sample_barcode-1", lambda d, bc, sm: d[sm].astype(str) + "_" + d[bc].astype(str) + "-1", "exact"),
+        ("sample-barcode",   lambda d, bc, sm: d[sm].astype(str) + "-" + d[bc].astype(str), "exact"),
+        ("cell_id",          lambda d, bc, sm: d["__cell_id__"].astype(str), "exact"),
+        ("cell_id-1",        lambda d, bc, sm: d["__cell_id__"].astype(str) + "-1", "exact"),
+    ]
+    if normalise:
+        cands += [
+            ("libnorm:sample_barcode-1",
+             lambda d, bc, sm: d[sm].astype(str).map(normalise) + "_" + d[bc].astype(str) + "-1",
+             "normalised"),
+            ("libnorm:sample_barcode",
+             lambda d, bc, sm: d[sm].astype(str).map(normalise) + "_" + d[bc].astype(str),
+             "normalised"),
+        ]
+    return cands
 
 
 def read_obs(h5ad_path):
@@ -106,20 +143,36 @@ def load_tcr_tables(paths, sample_col, barcode_col, cell_id_col):
     return tcr
 
 
-def score_candidates(tcr, obs_names, sample_col, barcode_col):
-    obs_set = set(map(str, obs_names))
+def resolve(keys, target, obs_set, norm_index):
+    """Map candidate keys to original obs_names (NaN where there is no match)."""
+    if target == "exact":
+        return keys.where(keys.isin(obs_set))
+    return keys.map(norm_index)
+
+
+def score_candidates(tcr, candidates, obs_set, norm_index, sample_col, barcode_col, n_clash):
     rows = []
-    for name, fn in CANDIDATES:
+    for name, fn, target in candidates:
         try:
             keys = fn(tcr, barcode_col, sample_col)
         except Exception as exc:                      # a candidate may not apply
-            rows.append({"candidate": name, "matched": 0, "total": len(tcr),
-                         "match_rate": 0.0, "note": f"skipped: {exc}"})
+            rows.append({"candidate": name, "target": target, "matched": 0,
+                         "total": len(tcr), "match_rate": 0.0, "note": f"skipped: {exc}"})
             continue
-        matched = int(sum(1 for k in keys if k in obs_set))
-        rows.append({"candidate": name, "matched": matched, "total": len(tcr),
-                     "match_rate": round(matched / max(len(tcr), 1), 6), "note": ""})
-    report = pd.DataFrame(rows).sort_values("matched", ascending=False).reset_index(drop=True)
+        matched = int(resolve(keys, target, obs_set, norm_index).notna().sum())
+        note = ""
+        if target == "normalised":
+            note = "library words dropped from sample names"
+            if n_clash:
+                note += f"; {n_clash} ambiguous GEX keys excluded"
+        rows.append({"candidate": name, "target": target, "matched": matched,
+                     "total": len(tcr), "match_rate": round(matched / max(len(tcr), 1), 6),
+                     "note": note})
+    report = pd.DataFrame(rows)
+    # most matches first; on a tie prefer an exact convention over a normalised one
+    report["_exact_first"] = (report["target"] != "exact").astype(int)
+    report = (report.sort_values(["matched", "_exact_first"], ascending=[False, True])
+                    .drop(columns="_exact_first").reset_index(drop=True))
     return report
 
 
@@ -138,6 +191,10 @@ def main():
     ap.add_argument("--cell-id-col", default="cell_id")
     ap.add_argument("--prefix", default="tcr_",
                     help="prefix for added obs columns (avoids clobbering GEX columns)")
+    ap.add_argument("--library-tokens", default="GEX,TCR,VDJ,BCR,ADT",
+                    help="comma-separated library-type words dropped from sample names before "
+                         "matching (e.g. BTC-GBM-001-001-GEX == BTC-GBM-001-001-TCR). "
+                         "Empty string requires identical sample names.")
     ap.add_argument("--min-match-rate", type=float, default=0.01,
                     help="fail if the best candidate matches fewer than this fraction "
                          "of TCR rows (default 0.01) - catches a wrong barcode convention")
@@ -161,40 +218,57 @@ def main():
     print(f"[read] {os.path.basename(args.gex_h5ad)}: {len(obs)} cells, "
           f"{obs.shape[1]} obs columns (matrix NOT loaded)")
 
+    obs_set = set(map(str, obs.index))
+    normalise = make_normaliser(args.library_tokens)
+    norm_index, n_clash = ({}, 0) if normalise is None else build_normalised_index(obs.index, normalise)
+    if normalise:
+        print(f"[join] library words ignored in sample names: {args.library_tokens}"
+              + (f" ({n_clash} ambiguous GEX keys excluded)" if n_clash else ""))
+
     # ── 2. pick the barcode convention by match rate ──────────────────────────
-    report = score_candidates(tcr, obs.index, args.sample_col, args.barcode_col)
+    candidates = build_candidates(normalise)
+    report = score_candidates(tcr, candidates, obs_set, norm_index,
+                              args.sample_col, args.barcode_col, n_clash)
     print("\n[join] candidate barcode keys:")
     for _, r in report.iterrows():
-        print(f"   {r['candidate']:<20} {r['matched']:>7} / {r['total']:<7} "
+        print(f"   {r['candidate']:<26} {r['matched']:>7} / {r['total']:<7} "
               f"({r['match_rate'] * 100:.2f}%) {r['note']}")
     report.to_csv(os.path.join(args.tables_dir, "barcode_join_report.tsv"),
                   sep="\t", index=False)
 
     best = report.iloc[0]
     if best["matched"] == 0 or best["match_rate"] < args.min_match_rate:
+        gex_samples = sorted({n.rsplit("_", 1)[0] for n in obs_set if "_" in n})[:5]
+        tcr_samples = sorted(tcr[args.sample_col].astype(str).unique())[:5]
         sys.exit(
             f"\nERROR: best candidate '{best['candidate']}' matched only "
             f"{best['matched']}/{best['total']} TCR rows "
             f"({best['match_rate'] * 100:.2f}% < {args.min_match_rate * 100:.2f}%).\n"
-            f"The barcode conventions do not line up. GEX obs_names look like: "
-            f"{list(map(str, obs.index[:3]))}\n"
-            f"TCR barcodes look like: {list(tcr[args.barcode_col].astype(str)[:3])}\n"
+            f"GEX obs_names look like: {list(map(str, obs.index[:3]))}\n"
+            f"TCR barcodes look like:  {list(tcr[args.barcode_col].astype(str)[:3])}\n"
+            f"GEX samples: {gex_samples}\n"
+            f"TCR samples: {tcr_samples}\n"
+            f"If these are the same specimens under different names, the sample names differ "
+            f"by more than the library words in --library-tokens ({args.library_tokens!r}). "
+            f"If they are different specimens, pick the GEX object that holds these samples.\n"
             f"See {args.tables_dir}/barcode_join_report.tsv for every candidate.")
 
-    key_fn = dict(CANDIDATES)[best["candidate"]]
+    fn, target = next((f, t) for n, f, t in candidates if n == best["candidate"])
     tcr = tcr.copy()
-    tcr["__key__"] = key_fn(tcr, args.barcode_col, args.sample_col)
+    tcr["__key__"] = fn(tcr, args.barcode_col, args.sample_col)
+    tcr["__obs__"] = resolve(tcr["__key__"], target, obs_set, norm_index)
     print(f"\n[join] using '{best['candidate']}' "
           f"({best['matched']}/{best['total']} TCR rows match a GEX cell)")
 
-    # ── 3. join (one TCR row per cell; duplicates reported, first kept) ───────
-    dup = int(tcr["__key__"].duplicated().sum())
+    # ── 3. join (one TCR row per GEX cell; duplicates reported, first kept) ───
+    matched_rows = tcr[tcr["__obs__"].notna()]
+    dup = int(matched_rows["__obs__"].duplicated().sum())
     if dup:
-        print(f"[warn] {dup} duplicate TCR keys; keeping the first of each")
-        tcr.drop_duplicates(subset="__key__", keep="first", inplace=True)
+        print(f"[warn] {dup} TCR rows map to a GEX cell already matched; keeping the first of each")
+    matched_rows = matched_rows.drop_duplicates(subset="__obs__", keep="first")
 
-    drop = {"__key__", "__cell_id__"}
-    payload = tcr.set_index("__key__")[[c for c in tcr.columns if c not in drop]]
+    drop = {"__key__", "__obs__", "__cell_id__"}
+    payload = matched_rows.set_index("__obs__")[[c for c in tcr.columns if c not in drop]]
     payload = payload.add_prefix(args.prefix)
 
     new_obs = obs.join(payload, how="left")
@@ -225,23 +299,29 @@ def main():
     new_obs.reset_index(names="cell_id").to_csv(
         os.path.join(td, "merged_obs.tsv"), sep="\t", index=False)
 
-    unmatched = tcr[~tcr["__key__"].isin(set(map(str, obs.index)))]
-    unmatched.drop(columns=["__key__", "__cell_id__"], errors="ignore").to_csv(
+    unmatched = tcr[tcr["__obs__"].isna()]
+    unmatched.drop(columns=["__key__", "__obs__", "__cell_id__"], errors="ignore").to_csv(
         os.path.join(td, "tcr_rows_without_gex_cell.tsv"), sep="\t", index=False)
 
     if args.sample_col in tcr.columns:
-        per_sample = (tcr.assign(matched=tcr["__key__"].isin(set(map(str, obs.index))))
-                        .groupby(args.sample_col)["matched"]
-                        .agg(tcr_cells="size", matched_to_gex="sum")
+        # Which GEX sample did each TCR sample land in? Makes a wrong pairing visible.
+        gex_sample = tcr["__obs__"].map(lambda n: n.rsplit("_", 1)[0] if isinstance(n, str) and "_" in n else None)
+        per_sample = (tcr.assign(matched=tcr["__obs__"].notna(), gex_sample=gex_sample)
+                        .groupby(args.sample_col)
+                        .agg(tcr_cells=("matched", "size"),
+                             matched_to_gex=("matched", "sum"),
+                             paired_gex_sample=("gex_sample",
+                                                lambda s: ";".join(sorted({x for x in s if x}))))
                         .reset_index())
         per_sample["match_rate"] = (per_sample["matched_to_gex"] /
                                     per_sample["tcr_cells"].clip(lower=1)).round(6)
         per_sample.to_csv(os.path.join(td, "per_sample_join_summary.tsv"),
                           sep="\t", index=False)
-        print("\n[summary] per sample:")
+        print("\n[summary] per sample (TCR sample -> GEX sample it paired with):")
         for _, r in per_sample.iterrows():
-            print(f"   {str(r[args.sample_col]):<14} {int(r['matched_to_gex']):>6}"
-                  f" / {int(r['tcr_cells']):<6} ({r['match_rate'] * 100:.1f}%)")
+            print(f"   {str(r[args.sample_col]):<34} {int(r['matched_to_gex']):>6} / "
+                  f"{int(r['tcr_cells']):<6} ({r['match_rate'] * 100:5.1f}%)  -> "
+                  f"{r['paired_gex_sample'] or '(no GEX partner)'}")
 
     pd.DataFrame([{
         "gex_h5ad": os.path.basename(args.gex_h5ad),
@@ -249,6 +329,8 @@ def main():
         "tcr_tables": ";".join(os.path.basename(p) for p in paths),
         "tcr_rows": len(tcr),
         "barcode_key": best["candidate"],
+        "sample_names_normalised": target == "normalised",
+        "library_tokens": args.library_tokens,
         "cells_with_tcr": n_matched,
         "tcr_rows_unmatched": len(unmatched),
     }]).to_csv(os.path.join(td, "merge_summary.tsv"), sep="\t", index=False)

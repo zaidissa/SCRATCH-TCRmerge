@@ -57,6 +57,12 @@
                 "description": "Column holding a composite cell id (e.g. <sample>_<barcode>). Synthesised from sample + barcode if absent.",
                 "default": "cell_id"
             },
+            "library_tokens": {
+                "type": "string",
+                "title": "Library-type words to ignore in sample names",
+                "description": "Comma-separated words removed from sample names before matching, so paired libraries line up: BTC-GBM-001-001-GEX and BTC-GBM-001-001-TCR both become BTC-GBM-001-001. Matched as whole tokens, so they can sit anywhere in the name (e.g. ...-S3-GEX-LIB). Clear it to require identical sample names.",
+                "default": "GEX,TCR,VDJ,BCR,ADT"
+            },
             "obs_prefix": {
                 "type": "string",
                 "title": "Prefix for added columns",

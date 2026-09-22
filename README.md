@@ -81,6 +81,30 @@ All candidates and their rates land in `tables/barcode_join_report.tsv`. If the 
 matches fewer than `min_match_rate` of TCR rows (default 1%), the run **fails with both formats
 printed** rather than silently writing an object with no TCR data.
 
+### Library-type words in sample names
+
+Paired 5′ GEX and VDJ libraries from the same GEM well share cell barcodes but are usually named
+after their library type, so exact sample-prefixed keys can never match:
+
+```
+GEX:  BTC-GBM-001-001-GEX_AAACCTGCAGTCAGCC-1        TCR sample:  BTC-GBM-001-001-TCR
+GEX:  BTC-GBM1-DFCI1-S3-70-S3-GEX-LIB_…             TCR sample:  BTC-GBM1-DFCI1-S3-70-S3-TCR-LIB
+```
+
+The words in `library_tokens` (default `GEX,TCR,VDJ,BCR,ADT`) are dropped as whole tokens from
+the sample part of **both** sides and tried as two extra candidates, `libnorm:sample_barcode-1`
+and `libnorm:sample_barcode`. Safeguards:
+
+- matches map back to the **original** GEX cell names — `obs_names` are never rewritten;
+- an exact convention wins any tie with a normalised one;
+- normalised keys two different cells would share are **excluded**, never resolved by guessing;
+- `tables/per_sample_join_summary.tsv` records which GEX sample each TCR sample paired with, so
+  a wrong pairing is visible.
+
+Barcodes are never joined without their sample: 10x barcodes collide across libraries by chance
+(~0.5% here), so a bare-barcode join would attach one sample's TCR to another sample's cells.
+True pairs match at 85–99%. Set `library_tokens` to empty to require identical sample names.
+
 ## Running locally
 
 ```bash
