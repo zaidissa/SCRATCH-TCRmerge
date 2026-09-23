@@ -120,7 +120,18 @@ def read_obs(h5ad_path):
     with h5py.File(h5ad_path, "r") as f:
         if "obs" not in f:
             sys.exit(f"ERROR: {h5ad_path} has no /obs group - is it a valid .h5ad?")
-        return read_elem(f["obs"])
+        obs = read_elem(f["obs"])
+
+    # Duplicate cell names would silently inflate the merge: a left join can match a
+    # duplicated label more than once, and reindexing by a duplicated label multiplies
+    # rows. Refuse rather than write an object with more cells than the input.
+    dup = obs.index.duplicated()
+    if dup.any():
+        examples = list(map(str, obs.index[dup][:3]))
+        sys.exit(f"ERROR: {os.path.basename(h5ad_path)} has {int(dup.sum())} duplicate "
+                 f"obs_names (e.g. {examples}). Cell names must be unique to join on them - "
+                 f"run adata.obs_names_make_unique() before merging.")
+    return obs
 
 
 def load_tcr_tables(paths, sample_col, barcode_col, cell_id_col):
@@ -272,8 +283,12 @@ def main():
     payload = payload.add_prefix(args.prefix)
 
     new_obs = obs.join(payload, how="left")
-    assert len(new_obs) == len(obs), "join changed the cell count - aborting"
     new_obs = new_obs.loc[obs.index]                       # preserve original order
+    # Checked AFTER the reindex: that is where a duplicated label would multiply rows,
+    # so a check before it would pass while the object silently grew.
+    if len(new_obs) != len(obs):
+        sys.exit(f"ERROR: the join changed the cell count ({len(obs)} -> {len(new_obs)}); "
+                 f"refusing to write a mismatched object.")
 
     matched_col = f"{args.prefix}has_tcr_match"
     probe = f"{args.prefix}{args.barcode_col}"
