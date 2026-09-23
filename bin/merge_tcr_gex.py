@@ -115,6 +115,97 @@ def build_candidates(normalise):
     return cands
 
 
+VDJ_REGIONS = ["fwr1_nt", "cdr1_nt", "fwr2_nt", "cdr2_nt", "fwr3_nt", "cdr3_nt", "fwr4_nt"]
+
+
+def build_contig_table(contig_paths, airr_paths, qc_passed_path, key_fn, target,
+                       obs_set, norm_index, sample_col, barcode_col, cell_id_col):
+    """
+    One row per CONTIG, each mapped to the GEX cell it belongs to.
+
+    .obs is strictly one row per cell, so per-contig data (one row per chain per cell,
+    and both chains of a multi-chain cell) cannot live there. It is emitted as a side
+    table instead, keyed by the same GEX cell name the merge used.
+
+    Sequences: TCRtoolkit's contig table carries the V(D)J regions separately
+    (fwr1_nt..fwr4_nt) which concatenate to roughly 340 nt of a ~500 nt contig - the
+    leader and constant region are not in it. Cell Ranger's airr_rearrangement.tsv has
+    the full contig in its 'sequence' column, so it is joined in when supplied.
+    """
+    frames = []
+    for p in contig_paths:
+        sep = "," if p.lower().endswith(".csv") else "\t"
+        df = pd.read_csv(p, sep=sep, low_memory=False)
+        frames.append(df)
+        print(f"[contigs] {os.path.basename(p)}: {len(df)} contigs")
+    contigs = pd.concat(frames, ignore_index=True)
+
+    for col in (sample_col, barcode_col, "contig_id"):
+        if col not in contigs.columns:
+            print(f"[contigs] skipped: no '{col}' column "
+                  f"(have {list(contigs.columns)[:12]}...)")
+            return None
+
+    # Reuse the EXACT key function the merge picked, so a contig lands on the same cell
+    # as its TCR row - not on a separately-guessed convention that could disagree.
+    #
+    # The two tables spell barcodes differently: the per-cell table has a bare 16-mer
+    # (AAACGGGGTAATAGCA) while the contig table carries the GEM suffix
+    # (AAACGGGGTAATAGCA-1), and the contig file's own cell_id is just that barcode rather
+    # than <sample>_<barcode>. Build the key from a bare-barcode working copy so both
+    # sides agree; the output keeps the source file's values untouched.
+    bare = contigs[barcode_col].astype(str).str.replace(r"-\d+$", "", regex=True)
+    work = contigs.assign(**{barcode_col: bare})
+    work["__cell_id__"] = contigs[sample_col].astype(str) + "_" + bare
+    contigs["gex_cell_id"] = resolve(key_fn(work, barcode_col, sample_col),
+                                     target, obs_set, norm_index)
+
+    # Full contig sequences, if Cell Ranger AIRR files were supplied.
+    seqs = {}
+    for p in airr_paths:
+        a = pd.read_csv(p, sep="\t", low_memory=False, usecols=lambda c: c in
+                        ("sequence_id", "sequence", "cell_id"))
+        if "sequence_id" not in a.columns or "sequence" not in a.columns:
+            print(f"[contigs] {os.path.basename(p)}: no sequence_id/sequence columns, skipped")
+            continue
+        for sid, seq in zip(a["sequence_id"].astype(str), a["sequence"].astype(str)):
+            seqs[sid] = seq
+        print(f"[contigs] {os.path.basename(p)}: {len(a)} full sequences")
+    if seqs:
+        contigs["contig_sequence_nt"] = contigs["contig_id"].astype(str).map(seqs)
+
+    # Reconstructed V(D)J portion, always available from the region columns.
+    present = [c for c in VDJ_REGIONS if c in contigs.columns]
+    if present:
+        contigs["vdj_region_nt"] = (contigs[present].fillna("").astype(str)
+                                    .agg("".join, axis=1).str.replace("nan", "", regex=False))
+
+    # Which contigs survived VDJ_QC? Build the table from contigs_before_qc.tsv to keep
+    # second alpha/beta chains (VDJ_QC strips them, so the post-QC file has at most one
+    # of each) and flag QC status here rather than losing the rows.
+    if qc_passed_path:
+        kept = pd.read_csv(qc_passed_path, sep="\t", low_memory=False,
+                           usecols=lambda c: c in ("contig_id", "sample"))
+        kept_ids = set(zip(kept["sample"].astype(str), kept["contig_id"].astype(str)))
+        contigs["passed_vdj_qc"] = [
+            (s, c) in kept_ids for s, c in zip(contigs[sample_col].astype(str),
+                                               contigs["contig_id"].astype(str))]
+        n_pass = int(contigs["passed_vdj_qc"].sum())
+        print(f"[contigs] {n_pass} of {len(contigs)} contigs passed VDJ_QC "
+              f"({len(contigs) - n_pass} removed by QC but kept here)")
+
+    matched = int(contigs["gex_cell_id"].notna().sum())
+    print(f"[contigs] {matched} of {len(contigs)} contigs map to a GEX cell "
+          f"({matched / max(len(contigs), 1) * 100:.1f}%)")
+    if seqs:
+        got = int(contigs["contig_sequence_nt"].notna().sum())
+        print(f"[contigs] {got} of {len(contigs)} carry a full contig sequence")
+    else:
+        print("[contigs] no AIRR files given: vdj_region_nt holds the assembled V(D)J "
+              "regions only (leader and constant region absent)")
+    return contigs
+
+
 def read_obs(h5ad_path):
     """Read only the /obs group - never touches X."""
     with h5py.File(h5ad_path, "r") as f:
@@ -209,6 +300,18 @@ def main():
     ap.add_argument("--min-match-rate", type=float, default=0.01,
                     help="fail if the best candidate matches fewer than this fraction "
                          "of TCR rows (default 0.01) - catches a wrong barcode convention")
+    ap.add_argument("--contigs", default="",
+                    help="comma-separated TCRtoolkit contig tables (contigs_after_qc.tsv). "
+                         "Emits tables/per_contig.tsv: one row per contig mapped to its GEX "
+                         "cell, which .obs cannot hold because it is one row per cell.")
+    ap.add_argument("--contigs-passed-qc", default="",
+                    help="TCRtoolkit's contigs_after_qc.tsv, used only to add a passed_vdj_qc "
+                         "column. Pair it with --contigs contigs_before_qc.tsv to keep second "
+                         "alpha/beta chains, which VDJ_QC strips, while still marking QC status.")
+    ap.add_argument("--airr", default="",
+                    help="comma-separated Cell Ranger airr_rearrangement.tsv files, for the "
+                         "FULL contig sequence. Without them the contig table carries only the "
+                         "assembled V(D)J regions (~340 of ~500 nt).")
     ap.add_argument("--subset-to-tcr", action="store_true",
                     help="ALSO write <out>.tcr_only.h5ad containing only TCR+ cells "
                          "(this one does read X for the subset)")
@@ -338,6 +441,24 @@ def main():
                   f"{int(r['tcr_cells']):<6} ({r['match_rate'] * 100:5.1f}%)  -> "
                   f"{r['paired_gex_sample'] or '(no GEX partner)'}")
 
+    # ── 5b. per-contig side table (one row per chain per cell) ───────────────
+    contig_paths = [p.strip() for p in args.contigs.split(",")
+                    if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
+    airr_paths = [p.strip() for p in args.airr.split(",")
+                  if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
+    n_contigs = 0
+    if contig_paths:
+        print()
+        qc_passed = args.contigs_passed_qc.strip()
+        if qc_passed and not (os.path.exists(qc_passed) and os.path.getsize(qc_passed) > 0):
+            qc_passed = ""
+        ct = build_contig_table(contig_paths, airr_paths, qc_passed, fn, target, obs_set,
+                                norm_index, args.sample_col, args.barcode_col, args.cell_id_col)
+        if ct is not None:
+            ct.drop(columns=["__cell_id__"], errors="ignore").to_csv(
+                os.path.join(td, "per_contig.tsv"), sep="\t", index=False)
+            n_contigs = len(ct)
+
     pd.DataFrame([{
         "gex_h5ad": os.path.basename(args.gex_h5ad),
         "gex_cells": len(obs),
@@ -348,6 +469,7 @@ def main():
         "library_tokens": args.library_tokens,
         "cells_with_tcr": n_matched,
         "tcr_rows_unmatched": len(unmatched),
+        "contigs": n_contigs,
     }]).to_csv(os.path.join(td, "merge_summary.tsv"), sep="\t", index=False)
 
     # ── 6. optional TCR-only subset (reads X for the kept cells only) ────────

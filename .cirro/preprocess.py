@@ -122,6 +122,24 @@ def pick_tcr_tables(ds, files, pattern):
     )
 
 
+def derive_contig_tables(ds, tcr_paths, names):
+    """
+    TCRtoolkit writes its per-contig tables to VDJ_QC/VDJ_QC/tables/ in the SAME dataset
+    as the per-cell table, at a fixed depth: .../data/bridge/merged_vdj_object/<table>.tsv
+    and .../data/VDJ_QC/VDJ_QC/tables/<contigs>.tsv. Derive them from the picked table
+    rather than scanning ds.files, which only lists part of a dataset.
+    """
+    out = {}
+    if not tcr_paths:
+        return out
+    folder = tcr_paths[0].rsplit("/", 1)[0]              # .../data/bridge/merged_vdj_object
+    data_root = folder.rsplit("/", 2)[0]                 # .../data
+    for key, name in names.items():
+        out[key] = f"{data_root}/VDJ_QC/VDJ_QC/tables/{name}"
+        ds.logger.info(f"contig table ({key}, derived): {out[key]}")
+    return out
+
+
 def main():
     ds = PreprocessDataset.from_running()
     ds.logger.info("List of starting params")
@@ -166,6 +184,32 @@ def main():
     )
     extra = pick_passthrough(ds, files, passthrough_patterns, tcr)
     ds.add_param("tcr_passthrough", ",".join(extra), overwrite=True)
+
+    # ── per-contig side table ────────────────────────────────────────────────
+    want_contigs = str(params.get("build_contig_table", True)).lower() not in ("false", "0", "no", "")
+    contigs = contigs_qc = ""
+    if want_contigs:
+        names = {
+            "contigs": params.get("contigs_filename") or "contigs_before_qc.tsv",
+            "contigs_passed_qc": params.get("contigs_qc_filename") or "contigs_after_qc.tsv",
+        }
+        derived = derive_contig_tables(ds, tcr, names)
+        contigs, contigs_qc = derived.get("contigs", ""), derived.get("contigs_passed_qc", "")
+    ds.add_param("contigs", contigs, overwrite=True)
+    ds.add_param("contigs_passed_qc", contigs_qc, overwrite=True)
+
+    # Full contig sequences live in Cell Ranger's AIRR files, in the upstream align
+    # dataset. Only used if such a dataset is among the selections and Cirro lists them.
+    airr = sorted(f for f in files if f.rsplit("/", 1)[-1] == "airr_rearrangement.tsv")
+    for a in airr:
+        ds.logger.info(f"AIRR file (full contig sequences): {a}")
+    if want_contigs and not airr:
+        ds.logger.info(
+            "No airr_rearrangement.tsv among the selected datasets: the contig table will "
+            "carry the assembled V(D)J regions (~340 nt) rather than full contig sequences. "
+            "Add the SCRATCH-align dataset to include them."
+        )
+    ds.add_param("airr_files", ",".join(airr), overwrite=True)
 
     ds.logger.info(
         f"Merging {len(tcr)} TCR table(s) onto 1 GEX object, carrying {len(extra)} "

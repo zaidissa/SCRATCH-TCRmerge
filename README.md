@@ -44,8 +44,35 @@ annotation object instead.
 | `tables/tcr_rows_without_gex_cell.tsv` | TCR cells with no matching GEX cell |
 | `tables/merge_summary.tsv` | One-line summary of the join |
 | `tables_rds/*.rds` | The same tables as R data.frames (`emit_rds`, default on) |
+| `tables/per_contig.tsv` | One row per **contig**, each mapped to its GEX cell (see below) |
 | `tcr_source/*` | The rest of the TCRtoolkit bundle, copied verbatim (see below) |
 | `merged.tcr_only.h5ad` | Optional: only cells carrying TCR data (`subset_to_tcr`) |
+
+### Cell-mapped contigs
+
+`.obs` is strictly one row per cell, so per-contig data cannot live there — and a cell with two
+alpha chains has no way to express the second one. `tables/per_contig.tsv` carries it instead:
+one row per contig, each with the `gex_cell_id` it belongs to, using the same barcode convention
+the merge chose.
+
+Built from `contigs_before_qc.tsv` by default, because **VDJ_QC strips second chains** — in one
+real cohort 1,371 cells had a second alpha and 473 a second beta before QC, and none after.
+QC-removed contigs are kept and flagged `passed_vdj_qc = False` rather than dropped:
+
+```
+BTC-GBM-001-001-GEX_AAAGCAACAAGACGTG-1
+   TRA  TRAV12-2  TRAJ37   CAVNRAGKLIF          umis=8   passed_vdj_qc=True
+   TRB  TRBV11-2  TRBJ1-4  CASSNPSGLFF          umis=31  passed_vdj_qc=True
+   TRA  TRAV27    TRAJ37   CAGGEKKDGSSNTGKLIF   umis=4   passed_vdj_qc=False
+```
+
+**Sequences.** `vdj_region_nt` concatenates the region columns (`fwr1_nt`…`fwr4_nt`) and is always
+present, but it is only the V(D)J portion — about 340 nt of a ~500 nt contig, without the leader
+or constant region. The full sequence lives in Cell Ranger's `airr_rearrangement.tsv`; if such a
+dataset is among your selections, it is joined in as `contig_sequence_nt`.
+
+Both contig tables are found automatically beside the TCR table you pick, so no extra selection
+is needed. Turn the whole thing off with "Also build a per-contig table".
 
 ### What gets joined, and what is only carried over
 

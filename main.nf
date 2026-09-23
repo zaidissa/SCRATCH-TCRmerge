@@ -36,6 +36,15 @@ def truthy(value) {
     value?.toString()?.toLowerCase() in ['true', '1', 'yes', 'y', 'on']
 }
 
+// Optional inputs: resolve to the files that actually exist, dropping the rest. Declared
+// as a function rather than `def x = { ... }` - Nextflow 26.04 will not let a closure
+// variable be called like a function from the workflow body.
+def existing_files(value) {
+    if (!value) return []
+    as_file_list(value).collect { file(it.trim(), checkIfExists: false) }
+                       .findAll { it.exists() }
+}
+
 workflow {
 
     if (!params.gex_h5ad) {
@@ -52,7 +61,22 @@ workflow {
         .flatMap { entry -> file(entry.trim(), checkIfExists: true) }
         .collect()
 
-    MERGE_TCR_GEX( ch_gex, ch_tcr )
+    // Optional inputs are staged as a placeholder when absent, so the process always has a
+    // file to stage and the script decides whether it is real. The placeholders must have
+    // DISTINCT names: Nextflow refuses to stage two input files with the same name, so a
+    // single shared NO_FILE fails with "input file name collision".
+    def no_contigs = file("${projectDir}/assets/NO_CONTIGS",    checkIfExists: true)
+    def no_qc      = file("${projectDir}/assets/NO_CONTIGS_QC", checkIfExists: true)
+    def no_airr    = file("${projectDir}/assets/NO_AIRR",       checkIfExists: true)
+    def contig_f   = existing_files(params.contigs)
+    def qc_f       = existing_files(params.contigs_passed_qc)
+    def airr_f     = existing_files(params.airr_files)
+
+    ch_contigs  = Channel.value( contig_f ? contig_f[0] : no_contigs )
+    ch_qcpassed = Channel.value( qc_f     ? qc_f[0]     : no_qc )
+    ch_airr     = Channel.value( airr_f ?: [no_airr] )
+
+    MERGE_TCR_GEX( ch_gex, ch_tcr, ch_contigs, ch_qcpassed, ch_airr )
 
     if (truthy(params.emit_rds)) {
         TABLES_TO_RDS( MERGE_TCR_GEX.out.tables )
