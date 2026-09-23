@@ -36,8 +36,8 @@
             "tcr_passthrough_patterns": {
                 "type": "string",
                 "title": "Other TCR files to carry over",
-                "description": "Comma-separated filename patterns from the same TCRtoolkit folder to copy into the merged dataset under tcr_source/ without joining them. The per-sample summaries are not per-cell, the .rds files are R objects, and pre_qc_cells.tsv repeats the same barcodes, so none can be joined onto .obs. Leave empty to carry nothing over.",
-                "default": "*_summary.tsv,*_seurat.rds,*_combineTCR.rds,pre_qc_cells.tsv"
+                "description": "Comma-separated filenames from the same TCRtoolkit folder, copied into the merged dataset under tcr_source/ without being joined (the summaries are per-sample, the .rds files are R objects, and pre_qc_cells.tsv repeats the same barcodes). Plain names are looked up next to the TCR table you picked, so they work even though Cirro's file listing shows only part of a dataset; wildcards like *_summary.tsv are matched against that listing instead. Missing files are skipped with a warning. Leave empty to carry nothing over.",
+                "default": "pre_qc_cells.tsv,pre_qc_summary.tsv,post_qc_summary.tsv,pre_qc_seurat.rds,post_qc_seurat.rds,pre_qc_combineTCR.rds,post_qc_combineTCR.rds"
             },
             "sample_col": {
                 "type": "string",

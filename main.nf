@@ -61,9 +61,17 @@ workflow {
     // Carry the rest of the TCR bundle (per-sample summaries, the Seurat/combineTCR
     // .rds objects, pre_qc_cells.tsv) into the merged dataset without joining it.
     if (params.tcr_passthrough) {
+        // These paths are partly DERIVED from the joined table's folder (Cirro's file
+        // listing is incomplete), so some may not exist. Skip those with a warning
+        // rather than failing a merge that is otherwise fine.
         ch_passthrough = Channel
             .fromList( as_file_list(params.tcr_passthrough) )
-            .flatMap { entry -> file(entry.trim(), checkIfExists: true) }
+            .flatMap { entry -> file(entry.trim(), checkIfExists: false) }
+            .filter { f ->
+                def present = f.exists()
+                if (!present) log.warn "tcr_source: skipping missing file ${f}"
+                present
+            }
             .collect()
 
         PUBLISH_TCR_SOURCE( ch_passthrough )

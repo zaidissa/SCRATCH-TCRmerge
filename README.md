@@ -61,6 +61,15 @@ TCRtoolkit's `bridge/merged_vdj_object/` holds eight files. Only one is joinable
 Carried-over files land in `tcr_source/` so the merged dataset holds the whole TCR bundle
 alongside the merged object. Set "Other TCR files to carry over" to empty to skip them.
 
+**How they are found.** Cirro's `ds.files` is an *indexed* listing that shows only part of a
+dataset — 6 of 257 files in one real run — so scanning it alone left `tcr_source/` empty. Plain
+filenames are therefore resolved as **siblings of the TCR table you picked**: they sit in the same
+`merged_vdj_object/` folder, so the path is predictable without listing anything. Wildcard entries
+(`*_summary.tsv`) are still matched against the listing, for datasets laid out differently.
+
+A derived path is a prediction rather than an observation, so any file that turns out not to exist
+is skipped with a warning instead of failing the run.
+
 The `.rds` files are **data.frames, not Seurat objects** — deliberately. Rebuilding a Seurat
 object here would reintroduce the matrix-size ceiling this tool exists to avoid.
 

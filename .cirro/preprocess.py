@@ -57,21 +57,49 @@ def pick_passthrough(ds, files, patterns, already_used):
     the Seurat / combineTCR .rds objects, plus pre_qc_cells.tsv. None of it can be joined
     onto .obs - the summaries are per-sample, the .rds files are R objects, and
     pre_qc_cells.tsv repeats the same barcodes - so it is republished verbatim instead.
+
+    Two ways of finding them, because ds.files is Cirro's *indexed* listing and shows only
+    a fraction of a dataset (6 of 257 files in one real run), which left this empty:
+
+      1. entries matched against whatever ds.files does expose;
+      2. plain filenames (no wildcard) derived as siblings of the table being joined -
+         they live in the same merged_vdj_object/ folder, so the path is predictable
+         without listing anything.
+
+    A derived path is a prediction, not an observation: main.nf skips any that turns out
+    not to exist rather than failing the run.
     """
     globs = [p.strip() for p in patterns.split(",") if p.strip()]
     used = set(already_used)
-    hits = [
+    parents = {u.rsplit("/", 1)[0] for u in used}
+    found = {}                                   # path -> how we found it
+
+    # 1. whatever the dataset listing exposes
+    listed = [
         f for f in files
         if f not in used and any(fnmatch(f.rsplit("/", 1)[-1], g) for g in globs)
     ]
-    # Only carry files that sit beside a table we are actually joining, so selecting a
-    # big upstream dataset does not drag unrelated .rds files into the output.
-    if used:
-        parents = {u.rsplit("/", 1)[0] for u in used}
-        beside = [f for f in hits if f.rsplit("/", 1)[0] in parents]
-        if beside:
-            hits = beside
-    return sorted(hits)
+    # Only carry files beside a table we are actually joining, so selecting a big
+    # upstream dataset does not drag unrelated .rds files into the output. This filter
+    # is strict: if nothing sits beside the table, the answer is nothing, not "fall back
+    # to every match anywhere in the dataset".
+    if parents:
+        listed = [f for f in listed if f.rsplit("/", 1)[0] in parents]
+    for f in listed:
+        found[f] = "listed"
+
+    # 2. siblings of the joined table(s), for entries that name a file outright
+    for folder in sorted(parents):
+        for g in globs:
+            if any(ch in g for ch in "*?["):      # a glob cannot be derived, only matched
+                continue
+            candidate = f"{folder}/{g}"
+            if candidate not in used and candidate not in found:
+                found[candidate] = "derived"
+
+    for path in sorted(found):
+        ds.logger.info(f"TCR file (carried over, {found[path]}): {path}")
+    return sorted(found)
 
 
 def pick_tcr_tables(ds, files, pattern):
@@ -132,11 +160,11 @@ def main():
     ds.add_param("tcr_tables", ",".join(tcr), overwrite=True)
 
     passthrough_patterns = params.get("tcr_passthrough_patterns") or (
-        "*_summary.tsv,*_seurat.rds,*_combineTCR.rds,pre_qc_cells.tsv"
+        "pre_qc_cells.tsv,pre_qc_summary.tsv,post_qc_summary.tsv,"
+        "pre_qc_seurat.rds,post_qc_seurat.rds,"
+        "pre_qc_combineTCR.rds,post_qc_combineTCR.rds"
     )
     extra = pick_passthrough(ds, files, passthrough_patterns, tcr)
-    for e in extra:
-        ds.logger.info(f"TCR file (carried over, not joined): {e}")
     ds.add_param("tcr_passthrough", ",".join(extra), overwrite=True)
 
     ds.logger.info(
