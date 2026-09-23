@@ -29,6 +29,13 @@ def as_file_list(value) {
         : [ value.toString() ]
 }
 
+// Cirro sends real JSON booleans, but `--flag true` on the command line arrives as the
+// STRING "true" - which `== true` rejects, while `?:` would accept even the string
+// "false". Compare the lower-cased text so both routes agree.
+def truthy(value) {
+    value?.toString()?.toLowerCase() in ['true', '1', 'yes', 'y', 'on']
+}
+
 workflow {
 
     if (!params.gex_h5ad) {
@@ -47,7 +54,7 @@ workflow {
 
     MERGE_TCR_GEX( ch_gex, ch_tcr )
 
-    if (params.emit_rds == true) {
+    if (truthy(params.emit_rds)) {
         TABLES_TO_RDS( MERGE_TCR_GEX.out.tables )
     }
 

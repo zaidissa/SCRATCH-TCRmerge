@@ -18,7 +18,11 @@ process MERGE_TCR_GEX {
 
     script:
     def tables_arg = tcr_tables.collect { "--tcr-table ${it}" }.join(' ')
-    def subset_arg = (params.subset_to_tcr == true) ? '--subset-to-tcr' : ''
+    // Cirro sends a real JSON boolean, but `--subset_to_tcr true` on the command line
+    // arrives as the STRING "true": `== true` is false for that, and `?:` is true for
+    // the string "false". Compare the lower-cased text instead so both agree.
+    def subset_arg = (params.subset_to_tcr?.toString()?.toLowerCase() in
+                      ['true', '1', 'yes', 'y', 'on']) ? '--subset-to-tcr' : ''
     // Nextflow runs task scripts under `set -e`, so a plain `cmd > log; cat log` aborts
     // BEFORE the cat when cmd fails - the traceback lands in merge_log.txt and never
     // reaches the task output. `|| { cat ...; exit 1; }` prints it first, then fails.

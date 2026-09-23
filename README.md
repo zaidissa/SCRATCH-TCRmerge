@@ -162,6 +162,10 @@ the minimum match rate, whether to write a TCR-only object, and whether to write
 | `--min_match_rate` | `0.01` | Abort below this barcode match rate |
 | `--subset_to_tcr` | `false` | Also write a TCR-only `.h5ad` |
 | `--emit_rds` | `true` | Also write `.rds` tables |
+
+Boolean options accept `true/false`, `1/0` and `yes/no`. On the command line Nextflow passes
+`--subset_to_tcr true` as the *string* `"true"`, so both spellings are compared as text — a plain
+`== true` test would silently ignore the flag, and a `?:` test would treat `"false"` as true.
 | `--container` | `syedsazaidi/scratch-tcr:latest` | Ships anndata, h5py, pandas, R/Seurat |
 
 ## Checking the result
