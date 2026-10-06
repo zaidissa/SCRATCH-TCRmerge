@@ -76,7 +76,15 @@ workflow {
     ch_qcpassed = Channel.value( qc_f     ? qc_f[0]     : no_qc )
     ch_airr     = Channel.value( airr_f ?: [no_airr] )
 
-    MERGE_TCR_GEX( ch_gex, ch_tcr, ch_contigs, ch_qcpassed, ch_airr )
+    // Cell Ranger lays these out as <sample>/outs/airr_rearrangement.tsv, so the
+    // grandparent directory is the sample name - and it matches the TCR table's
+    // `sample` column. Nextflow stages every file under the same basename, so the
+    // names have to travel alongside the files, in the same order, or contig ids
+    // (which repeat across samples) cannot be told apart.
+    ch_airr_samples = Channel.value(
+        airr_f ? airr_f.collect { it.parent?.parent?.name ?: '' }.join(',') : '' )
+
+    MERGE_TCR_GEX( ch_gex, ch_tcr, ch_contigs, ch_qcpassed, ch_airr, ch_airr_samples )
 
     if (truthy(params.emit_rds)) {
         TABLES_TO_RDS( MERGE_TCR_GEX.out.tables )

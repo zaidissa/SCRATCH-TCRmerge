@@ -11,7 +11,12 @@ process MERGE_TCR_GEX {
       path tcr_tables
       path contigs           // assets/NO_FILE when not supplied
       path contigs_passed_qc // assets/NO_FILE when not supplied
-      path airr_files        // assets/NO_FILE when not supplied
+      // Every Cell Ranger run names this file airr_rearrangement.tsv, so staging them
+      // flat is an "input file name collision" with more than one sample. One numbered
+      // subdirectory each keeps them distinct; airr_samples carries the sample names in
+      // the SAME order, because the staged path no longer identifies the sample.
+      path(airr_files, stageAs: 'airr_?/*')
+      val airr_samples
 
     output:
       path "merged.h5ad",            emit: merged_h5ad
@@ -35,7 +40,8 @@ process MERGE_TCR_GEX {
                      ? "--contigs-passed-qc ${contigs_passed_qc}" : ''
     def airr_list  = (airr_files instanceof List ? airr_files : [airr_files])
                      .findAll { it && !it.name.startsWith('NO_') }
-    def airr_arg   = airr_list ? "--airr ${airr_list.join(',')}" : ''
+    def airr_arg   = airr_list
+                     ? "--airr ${airr_list.join(',')} --airr-samples '${airr_samples}'" : ''
     // Nextflow runs task scripts under `set -e`, so a plain `cmd > log; cat log` aborts
     // BEFORE the cat when cmd fails - the traceback lands in merge_log.txt and never
     // reaches the task output. `|| { cat ...; exit 1; }` prints it first, then fails.

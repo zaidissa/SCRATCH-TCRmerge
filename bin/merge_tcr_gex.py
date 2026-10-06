@@ -161,18 +161,27 @@ def build_contig_table(contig_paths, airr_paths, qc_passed_path, key_fn, target,
                                      target, obs_set, norm_index)
 
     # Full contig sequences, if Cell Ranger AIRR files were supplied.
+    #
+    # Keyed on (sample, contig_id), NOT on contig_id alone. Cell Ranger names contigs
+    # <barcode>-1_contig_N and the same 16-mer barcode recurs across samples, so a flat
+    # key lets one sample's file overwrite another's and silently attaches the WRONG
+    # sequence to a cell. Measured on real data: one AIRR file (BTC-GBM-001-001-TCR)
+    # shared 3 contig ids with unrelated D26-* samples, and the colliding sequences did
+    # not even contain the contig's own V(D)J regions.
     seqs = {}
-    for p in airr_paths:
+    for sample, p in airr_paths:
         a = pd.read_csv(p, sep="\t", low_memory=False, usecols=lambda c: c in
                         ("sequence_id", "sequence", "cell_id"))
         if "sequence_id" not in a.columns or "sequence" not in a.columns:
-            print(f"[contigs] {os.path.basename(p)}: no sequence_id/sequence columns, skipped")
+            print(f"[contigs] {sample}: no sequence_id/sequence columns, skipped")
             continue
         for sid, seq in zip(a["sequence_id"].astype(str), a["sequence"].astype(str)):
-            seqs[sid] = seq
-        print(f"[contigs] {os.path.basename(p)}: {len(a)} full sequences")
+            seqs[(sample, sid)] = seq
+        print(f"[contigs] {sample}: {len(a)} full sequences")
     if seqs:
-        contigs["contig_sequence_nt"] = contigs["contig_id"].astype(str).map(seqs)
+        contigs["contig_sequence_nt"] = [
+            seqs.get((s, c)) for s, c in zip(contigs[sample_col].astype(str),
+                                             contigs["contig_id"].astype(str))]
 
     # Reconstructed V(D)J portion, always available from the region columns.
     present = [c for c in VDJ_REGIONS if c in contigs.columns]
@@ -200,6 +209,22 @@ def build_contig_table(contig_paths, airr_paths, qc_passed_path, key_fn, target,
     if seqs:
         got = int(contigs["contig_sequence_nt"].notna().sum())
         print(f"[contigs] {got} of {len(contigs)} carry a full contig sequence")
+        # Cell Ranger's own 'length' column is the contig length, so it independently
+        # checks the join: a sequence whose length disagrees came from another contig.
+        if got and "length" in contigs.columns:
+            have = contigs[contigs["contig_sequence_nt"].notna()]
+            seq_len = have["contig_sequence_nt"].str.len()
+            exp_len = pd.to_numeric(have["length"], errors="coerce")
+            bad = int((seq_len != exp_len).sum())
+            if bad:
+                print(f"[contigs] WARNING: {bad} joined sequences do not match the "
+                      f"contig's own 'length' - the sample/contig_id join is suspect")
+            else:
+                print(f"[contigs] all {got} joined sequences match the contig 'length' "
+                      f"column (mean {seq_len.mean():.0f} nt vs "
+                      f"{have['vdj_region_nt'].str.len().mean():.0f} nt for the V(D)J "
+                      f"regions alone)" if "vdj_region_nt" in have else
+                      f"[contigs] all {got} joined sequences match 'length'")
     else:
         print("[contigs] no AIRR files given: vdj_region_nt holds the assembled V(D)J "
               "regions only (leader and constant region absent)")
@@ -360,6 +385,12 @@ def main():
                     help="comma-separated Cell Ranger airr_rearrangement.tsv files, for the "
                          "FULL contig sequence. Without them the contig table carries only the "
                          "assembled V(D)J regions (~340 of ~500 nt).")
+    ap.add_argument("--airr-samples", default="",
+                    help="comma-separated sample names, SAME ORDER as --airr. Required when the "
+                         "files have been staged under identical basenames (as Nextflow does), "
+                         "because contig ids repeat across samples and must be disambiguated. "
+                         "If omitted, the sample is taken from the path: "
+                         "<sample>/outs/airr_rearrangement.tsv.")
     ap.add_argument("--subset-to-tcr", action="store_true",
                     help="ALSO write <out>.tcr_only.h5ad containing only TCR+ cells "
                          "(this one does read X for the subset)")
@@ -453,8 +484,20 @@ def main():
     # summary goes into .obs, and .obs is written in step 4 below.
     contig_paths = [p.strip() for p in args.contigs.split(",")
                     if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
-    airr_paths = [p.strip() for p in args.airr.split(",")
+    airr_files = [p.strip() for p in args.airr.split(",")
                   if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
+    # Pair each AIRR file with its sample. Nextflow stages all 98 under the same
+    # basename, so the name cannot identify the sample - the caller passes the names
+    # in matching order. Falling back to the path only works outside Nextflow, where
+    # the Cell Ranger layout <sample>/outs/airr_rearrangement.tsv is intact.
+    airr_samples = [s.strip() for s in args.airr_samples.split(",") if s.strip()]
+    if airr_samples and len(airr_samples) != len(airr_files):
+        sys.exit(f"ERROR: --airr-samples has {len(airr_samples)} names but --airr has "
+                 f"{len(airr_files)} readable files; they must correspond one to one.")
+    if not airr_samples:
+        airr_samples = [os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(p))))
+                        for p in airr_files]
+    airr_paths = list(zip(airr_samples, airr_files))
     ct, n_contigs = None, 0
     if contig_paths:
         print()
