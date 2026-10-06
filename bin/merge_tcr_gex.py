@@ -206,6 +206,54 @@ def build_contig_table(contig_paths, airr_paths, qc_passed_path, key_fn, target,
     return contigs
 
 
+CDR3_AA_COLS = ("cdr3", "junction_aa", "cdr3_aa")
+
+
+def summarise_contigs_per_cell(ct, prefix):
+    """
+    Per-cell chain counts taken from the PRE-QC contig table.
+
+    TCRtoolkit's VDJ_QC keeps one contig per chain per cell (highest UMI first, see
+    VDJ_QC_analysis.qmd), so multi_alpha / multi_beta in its per-cell table are FALSE
+    by construction - the second chain is gone before those flags are computed. These
+    columns count the chains before that filter, so a cell with two alphas is visible
+    in .obs. The TCRtoolkit columns are left untouched: they still faithfully report
+    the post-QC state, and keeping both makes the difference auditable.
+
+    A per-cell table cannot hold two alpha SEQUENCES in one field, so cdr3_*_all
+    joins them with ';' (highest-UMI chain first). tables/per_contig.tsv remains the
+    place to go for one row per contig.
+    """
+    if ct is None or "chain" not in ct.columns or "gex_cell_id" not in ct.columns:
+        return None
+    df = ct[ct["gex_cell_id"].notna()]
+    if df.empty:
+        return None
+
+    cdr3_col = next((c for c in CDR3_AA_COLS if c in df.columns), None)
+    if "umis" in df.columns:                      # so cdr3_*_all lists the dominant chain first
+        df = df.sort_values("umis", ascending=False)
+
+    cells = pd.Index(df["gex_cell_id"].unique())
+    out = pd.DataFrame(index=cells)
+    out[f"{prefix}n_contigs_all"] = df.groupby("gex_cell_id").size().reindex(cells)
+
+    for chain, tag in (("TRA", "alpha"), ("TRB", "beta"),
+                       ("TRG", "gamma"), ("TRD", "delta")):
+        sub = df[df["chain"] == chain]
+        if sub.empty:
+            continue
+        n = sub.groupby("gex_cell_id").size().reindex(cells).fillna(0).astype(int)
+        out[f"{prefix}n_{tag}_all"] = n
+        out[f"{prefix}multi_{tag}_all"] = n > 1
+        if cdr3_col:
+            out[f"{prefix}cdr3_{tag}_all"] = (
+                sub.groupby("gex_cell_id")[cdr3_col]
+                   .apply(lambda s: ";".join(s.dropna().astype(str)))
+                   .reindex(cells))
+    return out
+
+
 def read_obs(h5ad_path):
     """Read only the /obs group - never touches X."""
     with h5py.File(h5ad_path, "r") as f:
@@ -400,6 +448,39 @@ def main():
     print(f"[join] {n_matched} of {len(new_obs)} GEX cells carry TCR data "
           f"({n_matched / max(len(new_obs), 1) * 100:.2f}%)")
 
+    # ── 3b. contig table, and the true chain counts derived from it ───────────
+    # Built here rather than alongside the other side tables because the per-cell
+    # summary goes into .obs, and .obs is written in step 4 below.
+    contig_paths = [p.strip() for p in args.contigs.split(",")
+                    if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
+    airr_paths = [p.strip() for p in args.airr.split(",")
+                  if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
+    ct, n_contigs = None, 0
+    if contig_paths:
+        print()
+        qc_passed = args.contigs_passed_qc.strip()
+        if qc_passed and not (os.path.exists(qc_passed) and os.path.getsize(qc_passed) > 0):
+            qc_passed = ""
+        ct = build_contig_table(contig_paths, airr_paths, qc_passed, fn, target, obs_set,
+                                norm_index, args.sample_col, args.barcode_col, args.cell_id_col)
+        per_cell = summarise_contigs_per_cell(ct, args.prefix)
+        if per_cell is not None:
+            new_obs = new_obs.join(per_cell, how="left").loc[obs.index]
+            # Fill explicitly so the flags stay real booleans/ints rather than being
+            # stringified by the object-dtype pass below.
+            for c in per_cell.columns:
+                if c.startswith(f"{args.prefix}multi_"):
+                    new_obs[c] = new_obs[c].fillna(False).astype(bool)
+                elif c.startswith(f"{args.prefix}n_"):
+                    new_obs[c] = new_obs[c].fillna(0).astype(int)
+                else:
+                    new_obs[c] = new_obs[c].fillna("")
+            da = int(new_obs.get(f"{args.prefix}multi_alpha_all", pd.Series(dtype=bool)).sum())
+            db = int(new_obs.get(f"{args.prefix}multi_beta_all", pd.Series(dtype=bool)).sum())
+            print(f"[chains] {da} cells carry 2+ alpha chains, {db} carry 2+ beta "
+                  f"(counted before VDJ_QC's one-per-chain filter; "
+                  f"TCRtoolkit's own multi_* flags stay as they were)")
+
     # h5-safe dtypes: object -> str, NaN -> ""
     for c in new_obs.columns:
         if new_obs[c].dtype == object:
@@ -441,23 +522,11 @@ def main():
                   f"{int(r['tcr_cells']):<6} ({r['match_rate'] * 100:5.1f}%)  -> "
                   f"{r['paired_gex_sample'] or '(no GEX partner)'}")
 
-    # ── 5b. per-contig side table (one row per chain per cell) ───────────────
-    contig_paths = [p.strip() for p in args.contigs.split(",")
-                    if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
-    airr_paths = [p.strip() for p in args.airr.split(",")
-                  if p.strip() and os.path.exists(p.strip()) and os.path.getsize(p.strip()) > 0]
-    n_contigs = 0
-    if contig_paths:
-        print()
-        qc_passed = args.contigs_passed_qc.strip()
-        if qc_passed and not (os.path.exists(qc_passed) and os.path.getsize(qc_passed) > 0):
-            qc_passed = ""
-        ct = build_contig_table(contig_paths, airr_paths, qc_passed, fn, target, obs_set,
-                                norm_index, args.sample_col, args.barcode_col, args.cell_id_col)
-        if ct is not None:
-            ct.drop(columns=["__cell_id__"], errors="ignore").to_csv(
-                os.path.join(td, "per_contig.tsv"), sep="\t", index=False)
-            n_contigs = len(ct)
+    # ── 5b. per-contig side table (one row per chain per cell), built in 3b ──
+    if ct is not None:
+        ct.drop(columns=["__cell_id__"], errors="ignore").to_csv(
+            os.path.join(td, "per_contig.tsv"), sep="\t", index=False)
+        n_contigs = len(ct)
 
     pd.DataFrame([{
         "gex_h5ad": os.path.basename(args.gex_h5ad),
